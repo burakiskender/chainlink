@@ -1488,6 +1488,46 @@ func toISO8601(t time.Time) string {
 		t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), tz)
 }
 
+const removeUnstartedTransactionsQuery = `
+WITH
+unstarted_job_runs AS (
+	DELETE FROM job_runs
+	WHERE status = 'unstarted'
+	RETURNING id, run_request_id
+),
+linked_run_requests AS (
+	DELETE FROM run_requests AS rr
+	WHERE rr.id IN (
+		SELECT run_request_id
+		FROM unstarted_job_runs
+	)
+),
+linked_task_runs AS (
+	DELETE FROM task_runs AS ts
+	WHERE ts.job_run_id IN (
+		SELECT id
+		FROM unstarted_job_runs
+	)
+	RETURNING id
+),
+linked_eth_txes AS (
+	SELECT et.id
+	FROM eth_txes AS et, eth_task_run_txes AS etrt, linked_task_runs AS ltr
+	WHERE et.id = etrt.eth_tx_id
+	AND etrt.task_run_id = ltr.id
+)
+DELETE FROM eth_txes AS et
+WHERE et.id IN (
+	SELECT id
+	FROM linked_eth_txes
+)
+`
+
+// RemoveUnstartedTransactions removes unstarted transactions and all associated state in the database.
+func (orm *ORM) RemoveUnstartedTransactions() error {
+	return orm.DB.Exec(removeUnstartedTransactionsQuery).Error
+}
+
 func (orm *ORM) CountOf(t interface{}) (int, error) {
 	orm.MustEnsureAdvisoryLock()
 	var count int
